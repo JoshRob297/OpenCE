@@ -20,7 +20,12 @@ without a display to wait for, and its exits.
 #if HALO_SERVER_BUILD
 
 #include "posix_server.h"
+#include "server_console.h"
+#include "server_http.h"
+#include "server_log.h"
 #include "server_master.h"
+#include "server_netlist.h"
+#include "server_rotation.h"
 
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -30,6 +35,10 @@ without a display to wait for, and its exits.
 #ifndef HALO_BUILD_NUMBER
 #define HALO_BUILD_NUMBER 0
 #endif
+
+/* the game side's check of a rotation entry's gametype
+(port/linux/game/server_gametypes.c) */
+void server_gametype_check_entry(struct server_entry *entry);
 
 enum
 {
@@ -141,10 +150,10 @@ void server_mode_fatal(const char *text)
 		int length = end ? (int)(end - line) : (int)strlen(line);
 
 		if (length > 0)
-			platform_log("server fatal: %.*s", length, line);
+			server_log(_server_log_error, "server", "fatal: %.*s", length, line);
 		line += length + (end != NULL);
 	}
-	platform_log("server stopping after a fatal error (exit code %d)", SERVER_EXIT_FATAL);
+	server_log(_server_log_error, "server", "stopping after a fatal error (exit code %d)", SERVER_EXIT_FATAL);
 	server_mode_exit(SERVER_EXIT_FATAL);
 }
 
@@ -196,8 +205,171 @@ static void answer_command_line(void)
 	}
 }
 
+/* ---------- the checks before anything runs */
+
+/* the game data: the Xbox's main menu map, which the game cannot start
+without, and (server_mode_check_rotation) the rotation's maps */
+static void check_game_data(void)
+{
+	char path[1024];
+	long version, type;
+
+	platform_translate_path("d:\\maps\\ui.map", path, sizeof(path));
+	if (!server_map_header(path, &version, &type) || version != 5)
+	{
+		server_log(_server_log_error, "server", "no usable maps in %s (looked for ui.map%s, bloodgulch.map); exiting",
+			platform_data_root(), version ? " of the Xbox's" : "");
+		server_log(_server_log_error, "server",
+			"put the Xbox maps of your Halo: Combat Evolved disc image in %s/maps (paths.data, HALO_DATA_ROOT)",
+			platform_data_root());
+		server_mode_exit(SERVER_EXIT_NO_GAME_DATA);
+	}
+}
+
+static void check_rotation(void)
+{
+	static struct server_rotation rotation;
+	int index, missing = 0;
+
+	server_rotation_parse(config_string("server.rotation"), &rotation);
+	for (index = 0; index < rotation.count; index++)
+	{
+		struct server_entry *entry = &rotation.entries[index];
+
+		server_rotation_resolve(entry);
+		server_gametype_check_entry(entry);
+		if (entry->rejected[0])
+		{
+			server_log(_server_log_warning, "server", "rotation entry %d (%s) left out: %s", index + 1, entry->text,
+				entry->rejected);
+			missing += entry->map_missing;
+		}
+	}
+	if (rotation.truncated)
+	{
+		server_log(_server_log_warning, "server", "the rotation has more than %d entries or %d characters: the rest left out",
+			SERVER_ROTATION_MAXIMUM_ENTRIES, SERVER_ROTATION_MAXIMUM_TEXT);
+	}
+	if (server_rotation_playable(&rotation))
+		return;
+	if (rotation.count && missing == rotation.count)
+	{
+		server_log(_server_log_error, "server", "no usable maps in %s for the rotation (server.rotation); exiting",
+			platform_data_root());
+		server_mode_exit(SERVER_EXIT_NO_GAME_DATA);
+	}
+	if (config_boolean("server.rotation_fallback"))
+	{
+		server_log(_server_log_warning, "server", "the rotation has nothing playable: bloodgulch:slayer instead "
+			"(server.rotation_fallback)");
+		return;
+	}
+	server_log(_server_log_error, "server", "the rotation (server.rotation) has nothing playable; exiting");
+	server_mode_exit(SERVER_EXIT_CONFIGURATION);
+}
+
+/* a web password that is set: 8 characters at least with the web port
+bound beyond this machine (else the server stops), a warning if shorter */
+static void check_web_password(const char *setting, int loopback)
+{
+	const char *password = config_string(setting);
+
+	if (!password[0] || strlen(password) >= 8)
+		return;
+	if (!loopback)
+	{
+		server_log(_server_log_error, "server", "%s is shorter than 8 characters, with the web port bound beyond "
+			"this machine (%s); exiting", setting, config_string("server.web_bind"));
+		server_mode_exit(SERVER_EXIT_CONFIGURATION);
+	}
+	server_log(_server_log_warning, "server", "%s is shorter than 8 characters", setting);
+}
+
+/* the web port's settings: a password beyond loopback, and one made for
+it if there is none */
+static void check_web_settings(void)
+{
+	const char *bind = config_string("server.web_bind");
+	const char *password = config_string("server.web_password");
+	int loopback = !strcmp(bind, "127.0.0.1") || !strcmp(bind, "localhost") || !strncmp(bind, "127.", 4);
+
+	if (config_integer("server.web_port") <= 0)
+		return;
+	if (config_integer("server.web_port") > 65535)
+	{
+		server_log(_server_log_error, "server", "server.web_port %ld is no port; exiting", config_integer("server.web_port"));
+		server_mode_exit(SERVER_EXIT_CONFIGURATION);
+	}
+	if (!password[0])
+	{
+		static const char alphabet[] = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+		unsigned char random[20];
+		char made[24];
+		int index;
+
+		posix_random_bytes(random, sizeof(random));
+		for (index = 0; index < (int)sizeof(random); index++)
+			made[index] = alphabet[random[index] % (sizeof(alphabet) - 1)];
+		made[sizeof(random)] = 0;
+		if (config_write("server.web_password", made))
+		{
+			server_log(_server_log_info, "server", "the web page's admin password was made for this server (in "
+				"config.toml as server.web_password); it is on the standard output alone");
+			server_log_private(_server_log_info, "server", "the web page's admin password: %s", made);
+		}
+		else
+		{
+			server_log(_server_log_warning, "server", "config.toml cannot be written: the web page's admin password "
+				"for this run is on the standard output alone (set server.web_password)");
+			server_log_private(_server_log_warning, "server", "the web page's admin password for this run: %s", made);
+		}
+	}
+	/* (the made one is long enough; the moderator's and the viewer's are
+	checked as the admin's) */
+	check_web_password("server.web_password", loopback);
+	check_web_password("server.web_moderator_password", loopback);
+	check_web_password("server.web_viewer_password", loopback);
+	/* (the owner's, which stops the server and runs the game's console:
+	never short, wherever the port is bound) */
+	if (config_string("server.web_owner_password")[0] && strlen(config_string("server.web_owner_password")) < 8)
+	{
+		server_log(_server_log_error, "server", "server.web_owner_password is shorter than 8 characters; exiting");
+		server_mode_exit(SERVER_EXIT_CONFIGURATION);
+	}
+}
+
+/* the tunnel's UDP port, for internet play: taken by another program, the
+server would host only on the LAN */
+static void check_tunnel_port(void)
+{
+	long port = config_integer("network.tunnel_port");
+	unsigned char address[16];
+	int socket;
+
+	if (!config_boolean("network.online") || port <= 0 || port > 65535)
+		return;
+	memset(address, 0, sizeof(address));
+	/* (a sockaddr_in: AF_INET, the port, any address) */
+	address[0] = 2;
+	address[2] = (unsigned char)(port >> 8);
+	address[3] = (unsigned char)port;
+	socket = posix_socket(2, 2, 17);
+	if (socket < 0)
+		return;
+	if (posix_socket_bind(socket, address, sizeof(address)) != 0)
+	{
+		posix_socket_close(socket);
+		server_log(_server_log_error, "server", "the UDP port %ld (network.tunnel_port, HALO_NET_TUNNEL_PORT) is taken "
+			"by another program; exiting", port);
+		server_mode_exit(SERVER_EXIT_PORT_IN_USE);
+	}
+	posix_socket_close(socket);
+}
+
 void server_mode_start(void)
 {
+	char config[1024];
+
 	answer_command_line();
 	if (!halo_server_mode())
 		return;
@@ -208,6 +380,21 @@ void server_mode_start(void)
 	/* (SDL's own would turn SIGINT and SIGTERM into a quit event, which the
 	server's signals do better) */
 	SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
+	server_log_set_json(!strcmp(config_string("server.log_format"), "json"));
+	config_folder(config, sizeof(config));
+	server_log(_server_log_info, "server", "OpenCE %s, network version %d, dedicated server; data root %s, saves %s, "
+		"settings in %s", server_mode_build(), HALO_PORT_NETWORK_VERSION, platform_data_root(), platform_save_root(),
+		config[0] ? config : "./");
+	check_game_data();
+	check_rotation();
+	check_web_settings();
+	check_tunnel_port();
+	server_console_start();
+	if (!server_http_start())
+		server_mode_exit(SERVER_EXIT_PORT_IN_USE);
+	server_master_start();
+	/* (the netlists of the masters it publishes to: its VPN policy) */
+	server_netlist_start();
 }
 
 int server_mode_signals(int *quit_signal)

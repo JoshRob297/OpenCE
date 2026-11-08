@@ -28,11 +28,6 @@ A dedicated server's publishing to the official master servers
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdarg.h>
-
-
-
-
 
 /* ---------- the publisher key */
 
@@ -540,10 +535,7 @@ static void publish_answer(struct master *each, struct update_response *response
 		if (closed && !code[0])
 			server_log(_server_log_info, "master", "%s: withdrawn", each->url);
 		else if (listed)
-		{
-			platform_log("server_master: SUCCESS -> %s: listed (probe %s)", each->url, probe[0] ? probe : "-");
 			server_log(_server_log_info, "master", "%s: listed (probe %s)", each->url, probe[0] ? probe : "-");
-		}
 		else if (!strcmp(code, "publisher_pending"))
 			server_log(_server_log_warning, "master", "%s: publisher pending: apply at %s/apply with the public key "
 				"sv_publisher shows", each->url, each->url);
@@ -649,7 +641,8 @@ static int SDLCALL master_thread_main(void *unused)
 		for (index = 0; index < master.master_count; index++)
 			withdrawing |= master.masters[index].published;
 		/* (a player's host: its PUBLIC, which the listing says) */
-		if (!due || (!withdrawing && !config_boolean("network.online")))
+		if (!due || (!withdrawing && ((halo_server_mode() && !config_boolean("server.public")) ||
+			!config_boolean("network.online"))))
 		{
 			SDL_WaitConditionTimeout(master.wake, master.lock, 1000);
 			continue;
@@ -659,10 +652,7 @@ static int SDLCALL master_thread_main(void *unused)
 		last_publish = now;
 		SDL_UnlockMutex(master.lock);
 		for (index = 0; index < master.master_count; index++)
-		{
-			platform_log("server_master: publishing to %s", master.masters[index].url);
 			publish_to(&master.masters[index], 0);
-		}
 		SDL_LockMutex(master.lock);
 	}
 	SDL_UnlockMutex(master.lock);
@@ -684,7 +674,6 @@ static void master_start(int quiet);
 
 void server_master_start(void)
 {
-	platform_log("server_master: server_master_start() invoked!");
 	master_start(0);
 }
 
@@ -704,7 +693,6 @@ static void master_start(int quiet)
 
 	master.lock = SDL_CreateMutex();
 	master.wake = SDL_CreateCondition();
-	platform_log("server_master: master_start starting (has_key=%d)", publisher_seed(master.seed));
 	master.master_count = master_list_read(config_string("server.masters_file"), urls, keys,
 		SERVER_MASTER_MAXIMUM_MASTERS);
 	for (index = 0; index < master.master_count; index++)
@@ -748,14 +736,30 @@ static void master_start(int quiet)
 	}
 	server_log(_server_log_info, "master", "publishing to %d master server%s as %s (key id %s, server id %s)",
 		master.master_count, master.master_count == 1 ? "" : "s", master.instance, master.key_id, master.server_id);
-	platform_log("server_master: spawning thread (count=%d, key_id=%s, instance=%s)", master.master_count, master.key_id, master.instance);
 	master.thread = SDL_CreateThread(master_thread_main, "server masters", NULL);
-	platform_log("server_master: thread spawned result=%p", master.thread);
 	master.started = master.thread != NULL;
 	/* (a player's host withdrawn as the game exits: the director stops a
 	dedicated server's itself) */
 	if (quiet && master.started)
 		atexit(server_master_stop);
+}
+
+int server_master_publishing_masters(char (*urls)[256], unsigned char (*keys)[SERVER_MASTER_PUBLIC_KEY_SIZE],
+	int maximum)
+{
+	int index, count = 0;
+
+	/* (read once at the start: not written after) */
+	if (!halo_server_mode() || !config_boolean("server.master_publish") || !master.has_key)
+		return 0;
+	for (index = 0; index < master.master_count && count < maximum; index++)
+	{
+		if (urls)
+			snprintf(urls[count], 256, "%s", master.masters[index].url);
+		memcpy(keys[count], master.masters[index].key, SERVER_MASTER_PUBLIC_KEY_SIZE);
+		count++;
+	}
+	return count;
 }
 
 void server_master_set_state(const char *members, int changed)
@@ -964,6 +968,15 @@ void server_master_identity(char *instance, int instance_size, char *key_id, int
 void server_master_status(struct server_json *json)
 {
 	(void)json;
+}
+
+int server_master_publishing_masters(char (*urls)[256], unsigned char (*keys)[SERVER_MASTER_PUBLIC_KEY_SIZE],
+	int maximum)
+{
+	(void)urls;
+	(void)keys;
+	(void)maximum;
+	return 0;
 }
 
 #endif

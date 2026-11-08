@@ -394,6 +394,10 @@ symbols in this file:
 #include "map_share.h" /* port: port/linux/game/map_share.c */
 #include "custom_edition_cache.h" /* port: port/linux/game/custom_edition_cache.c */
 
+/* port/linux/game/network_test.c's: whether this machine is a dedicated host
+without a player of its own, which keeps its game (NETCODE.md) */
+boolean network_test_host_keeps_its_game(void);
+
 /* ---------- constants */
 
 enum
@@ -1868,6 +1872,13 @@ boolean network_game_client_remove_player(
 			if (network_player_index == MAXIMUM_NUMBER_OF_PLAYERS &&
 				(!halo_server_mode() || player->machine_index == client->machine_index))
 			{
+				/* port: a dedicated host has no player of its own
+				(debug.network_test_player), so every player leaving reads as its
+				own players leaving: the machine stays, its game ends with no
+				players and returns it to its lobby, and its server, its tunnel
+				and its listing are kept. Leaving would dispose them (network
+				server disposed, no network game server): a host left running
+				would be up but invisible to everyone */
 				network_game_client_all_local_players_have_quit();
 				network_event("no local players remain in the game, exiting the game now");
 			}
@@ -3246,10 +3257,10 @@ the system link list does (network_game_join_game_from_server_list) */
 void platform_show_message(char const *title, char const *message);
 
 /* whether this client can join the advertised game: its host's network
-version is this machine's (HALO_PORT_NETWORK_VERSION), and it plays the
-distributed netcode (a host of this version built before the lockstep
-netcode was removed may play that). If not the player is told why (when
-tell), and nothing is joined. */
+version is one this build plays (HALO_PORT_NETWORK_VERSION_MINIMUM to
+HALO_PORT_NETWORK_VERSION_MAXIMUM), and it plays the distributed netcode (a
+host of this version built before the lockstep netcode was removed may play
+that). If not the player is told why (when tell), and nothing is joined. */
 boolean network_game_client_advertised_game_compatible(
 	struct network_game_client *client,
 	struct network_advertised_game const *game,
@@ -3257,6 +3268,8 @@ boolean network_game_client_advertised_game_compatible(
 {
 	long game_index = client ? game - client->available_games : NONE;
 	unsigned int ours = HALO_PORT_NETWORK_VERSION;
+	unsigned int oldest = HALO_PORT_NETWORK_VERSION_MINIMUM;
+	unsigned int newest = HALO_PORT_NETWORK_VERSION_MAXIMUM;
 	unsigned int theirs;
 	boolean distributed;
 
@@ -3265,9 +3278,9 @@ boolean network_game_client_advertised_game_compatible(
 	theirs = network_game_client_advertised_versions[game_index].version;
 	distributed = (network_game_client_advertised_versions[game_index].flags &
 		HALO_PORT_ADVERTISED_DISTRIBUTED_FLAG) != 0;
-	if (theirs == ours && distributed)
+	if (theirs >= oldest && theirs <= newest && distributed)
 	{
-		network_event("joining a host of network version %u", theirs);
+		network_event("joining a host of network version %u (this machine's is %u)", theirs, ours);
 		return TRUE;
 	}
 	if (tell)
@@ -3284,13 +3297,13 @@ void network_game_client_tell_version(
 	unsigned int ours = HALO_PORT_NETWORK_VERSION;
 	char message[400];
 
-	if (theirs == ours)
+	if (theirs >= HALO_PORT_NETWORK_VERSION_MINIMUM && theirs <= HALO_PORT_NETWORK_VERSION_MAXIMUM)
 	{
 		csprintf(message,
 			"The host is using the lockstep network code, which this version no longer has.\n\n"
 			"Ask the host to update the game.");
 	}
-	else if (theirs > ours)
+	else if (theirs > HALO_PORT_NETWORK_VERSION_MAXIMUM)
 	{
 		csprintf(message,
 			"The host is using a newer version of the network code than you.\n\n"

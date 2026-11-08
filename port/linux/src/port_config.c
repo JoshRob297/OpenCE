@@ -222,10 +222,8 @@ static const struct config_setting config_settings[] =
 		"without one), \"english\" for English. The port's own lines are English." },
 	{ "display.player_names", _config_string, "\"all\"", "HALO_PLAYER_NAMES", _environment_value, _platform_all,
 		"In multiplayer, whose names are drawn above their heads: \"all\",\n"
-		"\"allies\", \"enemies\" or \"none\". An enemy's shows only within the\n"
-		"motion sensor's reach, in sight and not camouflaged; none show if the\n"
-		"gametype's motion tracker shows no players, only allies' if it shows\n"
-		"only friends." },
+		"\"allies\", \"enemies\" or \"none\". An enemy's shows only while in sight\n"
+		"and not camouflaged." },
 	{ "display.player_name_scale", _config_real, "1.0", "HALO_PLAYER_NAME_SCALE", _environment_value, _platform_all,
 		"How large the players' names are drawn: 1.0 three quarters of the size of\n"
 		"the HUD's text, 0.25 to 4." },
@@ -774,6 +772,11 @@ static const struct config_setting config_settings[] =
 		"invite find each other (its messages are encrypted), beside this file\n"
 		"unless a full path: one host:port on each line, up to 4. Updates\n"
 		"replace brokers.txt: keep a list of your own under another name." },
+	{ "network.server_name", _config_string, "\"\"", "HALO_NET_SERVER_NAME", _environment_value, _platform_all,
+		"The name a dedicated host's listing shows in everyone's server\n"
+		"browser (debug.network_test's host; a game the menus make takes\n"
+		"Server Setup's own). Empty leaves the game's own, which here is\n"
+		"none." },
 	{ "network.public_address", _config_string, "\"\"", "HALO_NET_PUBLIC_ADDRESS", _environment_value,
 		_platform_desktop,
 		"Hosting: the internet address joiners reach this machine at, as\n"
@@ -1094,18 +1097,42 @@ static const struct config_setting config_settings[] =
 
 	{ "debug.network_test", _config_string, "\"\"", "HALO_NETWORK_TEST", _environment_value, _platform_all,
 		"Automated system link sessions for testing (port/linux/game/network_test.c):\n"
-		"\"host:<map>\" hosts a game on that map, \"local:<map>\" plays a local (split\n"
+		"\"host:<map>[:<variant>,<variant>...]\" hosts a game on that map with those\n"
+		"variants in turn, and \";\" between such entries rotates through the maps\n"
+		"(the first again past the last); \"local:<map>\" plays a local (split\n"
 		"screen) game on it, \"join\" joins the first game found,\n"
 		"\"browse\" the one with the most players the server browser lists (not\n"
 		"co-op, if it can), \"log\" logs the game that runs (and runs its cues);\n"
 		"empty for none." },
 	{ "debug.network_test_start", _config_real, "15.0", "HALO_NETWORK_TEST_START", _environment_value, _platform_all,
-		"Seconds after hosting that an automated test game starts." },
+		"Seconds after hosting that an automated test host leaves its game to the\n"
+		"server's own countdown: the countdown starts a game whose conditions\n"
+		"hold (a host alone included) and every machine's lobby shows it. This is\n"
+		"how long the host waits after that before starting the game by force, if\n"
+		"no countdown is running." },
+	{ "debug.network_test_player", _config_boolean, "true", "HALO_NETWORK_TEST_PLAYER", _environment_value,
+		_platform_all,
+		"The host's own player (the automated test's, which upstream adds so\n"
+		"that the test has one to shoot and be shot). true: the host plays as\n"
+		"a player, so its map list moves on with nobody on the server. false:\n"
+		"the host takes no player and its games are the players' alone, the\n"
+		"host waiting in its lobby for the first one (a game's countdown needs\n"
+		"a player, and one player with nobody else is enough)." },
+	{ "debug.network_test_countdown", _config_integer, "0", "HALO_NETWORK_TEST_COUNTDOWN", _environment_value,
+		_platform_all,
+		"Seconds the lobby counts down to the start of a game a host runs: 0 the\n"
+		"game's own (31), and a host the map list is given sets its own here so\n"
+		"that a rotation of short games is not waited out." },
 	{ "debug.network_test_kill", _config_real, "0.0", "HALO_NETWORK_TEST_KILL", _environment_value, _platform_all,
 		"Every this many seconds an automated test host kills its last player; 0 never." },
 	{ "debug.network_test_score", _config_integer, "0", "HALO_NETWORK_TEST_SCORE", _environment_value, _platform_all,
 		"The score an automated test host's game type plays to (a short game, to\n"
 		"test the next); 0 the game type's own." },
+	{ "debug.network_test_time", _config_integer, "0", "HALO_NETWORK_TEST_TIME", _environment_value, _platform_all,
+		"The minutes an automated test host gives a game, over the game type's own\n"
+		"limit (a built-in variant's is none, so its game ends only by the score it\n"
+		"plays to and a host that rotates maps would never move on); 0 the game\n"
+		"type's own." },
 	{ "debug.network_test_shoot", _config_real, "0.0", "HALO_NETWORK_TEST_SHOOT", _environment_value, _platform_all,
 		"Every this many seconds each automated test player hits the next with\n"
 		"their weapon, within its reach (the host brings far players near the\n"
@@ -1272,6 +1299,53 @@ static const struct config_setting config_settings[] =
 		"Megabytes a recording keeps in memory, 4 to 1024: two halves, each\n"
 		"written out as a part when it fills." },
 #endif
+	{ "network.public_chat", _config_boolean, "false", "HALO_NET_PUBLIC_CHAT", _environment_set_is_true, _platform_all,
+		"Allow text chat in games listed in the public server browser. The default\n"
+		"is false (chat off in public listings, as a client-hosted game). A\n"
+		"dedicated server with operator moderation (kick, ban, /mute) may set\n"
+		"this to true. network.text_chat still controls whether chat is on at\n"
+		"all; this only lifts the public-listing restriction.\n" },
+	{ "match.respawn_time", _config_integer, "0", "HALO_MATCH_RESPAWN_TIME", _environment_value, _platform_all,
+		"Player respawn time in seconds (0 = variant default, 3 = 3s, 5 = 5s, 10 = 10s)" },
+	{ "match.vehicle_respawn", _config_integer, "30", "HALO_MATCH_VEHICLE_RESPAWN", _environment_value, _platform_all,
+		"Vehicle respawn time in seconds (0 = never, 30 = default)" },
+	{ "match.vehicles", _config_string, "\"default\"", "HALO_MATCH_VEHICLES", _environment_value, _platform_all,
+		"Vehicles for multiplayer games: default, none, warthog, ghost, tank, all" },
+	{ "match.weapons", _config_string, "\"normal\"", "HALO_MATCH_WEAPONS", _environment_value, _platform_all,
+		"Weapons for multiplayer games: normal, pistols, assault_rifles, plasma_weapons, sniping, rockets, shotguns, classic, heavy" },
+	{ "match.friendly_fire", _config_string, "\"on\"", "HALO_MATCH_FRIENDLY_FIRE", _environment_value, _platform_all,
+		"Multiplayer friendly fire: off, on, shields_only, explosives_only" },
+	{ "match.infinite_grenades", _config_boolean, "false", "HALO_MATCH_INFINITE_GRENADES", _environment_set_is_true, _platform_all,
+		"Infinite grenades in multiplayer matches" },
+	{ "match.score_to_win", _config_integer, "0", "HALO_MATCH_SCORE_TO_WIN", _environment_value, _platform_all,
+		"Score to win override for multiplayer matches (0 = variant default)" },
+	{ "network.server_password", _config_string, "\"\"", "HALO_NET_SERVER_PASSWORD", _environment_value, _platform_all,
+		"The join password for the game. Empty means no password (open server).\n"
+		"When set, the game is listed in the server browser with a lock icon\n"
+		"and clients must enter the password to join." },
+	{ "network.map_rotation", _config_string, "\"sequence\"", "HALO_NET_MAP_ROTATION", _environment_value, _platform_all,
+		"How a dedicated server playlist advances between games:\n"
+		"\"sequence\" runs the playlist entries in order, looping back to the\n"
+		"start. \"shuffle\" chooses a random map and variant from the playlist\n"
+		"avoiding picking the exact same entry twice in a row (if playlist length > 1)." },
+	{ "network.map_voting", _config_boolean, "false", "HALO_NET_MAP_VOTING", _environment_set_is_true, _platform_all,
+		"Allow players to vote for the next map and gametype during the lobby countdown\n"
+		"by typing the option number in chat. Default is false." },
+	{ "network.map_vote_options", _config_integer, "3", "HALO_NET_MAP_VOTE_OPTIONS", _environment_value, _platform_all,
+		"Number of map/gametype candidates presented in lobby vote (2 to 5). Default is 3." },
+	{ "network.afk_timeout", _config_integer, "180", "HALO_NET_AFK_TIMEOUT", _environment_value, _platform_all,
+		"Inactivity timeout in seconds before an idle player is kicked from the game\n"
+		"(0 turns it off). At 30 seconds before the limit, a private warning is sent\n"
+		"to the player. The host is never kicked." },
+	{ "webhooks.discord", _config_string, "\"\"", "HALO_WEBHOOK_DISCORD", _environment_value, _platform_all,
+		"Discord webhook URL for server event notifications (matches, carnage, bans); empty disables." },
+	{ "webhooks.telegram", _config_string, "\"\"", "HALO_WEBHOOK_TELEGRAM", _environment_value, _platform_all,
+		"Telegram webhook URL for server event notifications; empty disables." },
+	{ "network.health_port", _config_integer, "0", "HALO_NET_HEALTH_PORT", _environment_value, _platform_all,
+		"TCP port for the HTTP health endpoint (GET /health returns the state,\n"
+		"the map, the players and the minutes left as JSON). 0 turns it off.\n"
+		"Bind to 0.0.0.0, so a container publishes it; it serves no other path.\n" },
+
 };
 
 #define NUMBER_OF_CONFIG_SETTINGS (sizeof(config_settings) / sizeof(config_settings[0]))
@@ -2069,6 +2143,10 @@ static const struct
 	{ "streamer.swearing", { "off", "severe", "strong", "mild", NULL }, NULL },
 	{ "streamer.insults", { "off", "severe", "strong", "mild", NULL }, NULL },
 	{ "crash_reports.upload", { "ask", "yes", "no", NULL }, NULL },
+	{ "match.vehicles", { "default", "none", "warthog", "ghost", "tank", "all", NULL }, NULL },
+	{ "match.weapons", { "normal", "pistols", "assault_rifles", "plasma_weapons", "sniping", "rockets", "shotguns", "classic", "heavy", NULL }, NULL },
+	{ "match.friendly_fire", { "off", "on", "shields_only", "explosives_only", NULL }, NULL },
+	{ "network.map_rotation", { "sequence", "shuffle", NULL }, NULL },
 };
 
 #define NUMBER_OF_CONFIG_WORDS (sizeof(config_words) / sizeof(config_words[0]))

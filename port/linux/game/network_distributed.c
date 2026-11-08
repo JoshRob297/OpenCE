@@ -2828,6 +2828,101 @@ static void distributed_note_input_actions(
 	player_control_action_test_note(action->control_flags, &turn, &action->throttle, action->primary_trigger);
 }
 
+/* ---------- AFK tracking (dedicated host) */
+
+static struct
+{
+	unsigned long last_active_ms[HALO_PORT_MAXIMUM_NETWORK_MACHINES];
+	boolean warned[HALO_PORT_MAXIMUM_NETWORK_MACHINES];
+	real_euler_angles2d last_facing[HALO_PORT_MAXIMUM_NETWORK_MACHINES];
+	boolean initialized[HALO_PORT_MAXIMUM_NETWORK_MACHINES];
+} distributed_afk;
+
+static void distributed_afk_note_activity(
+	long machine_index,
+	struct player_action const *action)
+{
+	unsigned long now = system_milliseconds();
+	boolean active = FALSE;
+
+	if (machine_index < 0 || machine_index >= HALO_PORT_MAXIMUM_NETWORK_MACHINES)
+		return;
+
+	if (action->control_flags != 0 ||
+		action->throttle.i != 0.0f || action->throttle.j != 0.0f ||
+		action->primary_trigger > 0.0f)
+	{
+		active = TRUE;
+	}
+	else if (distributed_afk.initialized[machine_index])
+	{
+		real dyaw = action->desired_facing.yaw - distributed_afk.last_facing[machine_index].yaw;
+		real dpitch = action->desired_facing.pitch - distributed_afk.last_facing[machine_index].pitch;
+
+		if (dyaw * dyaw + dpitch * dpitch > 0.001f)
+			active = TRUE;
+	}
+
+	if (active || !distributed_afk.initialized[machine_index])
+	{
+		distributed_afk.last_active_ms[machine_index] = now;
+		distributed_afk.warned[machine_index] = FALSE;
+		distributed_afk.last_facing[machine_index] = action->desired_facing;
+		distributed_afk.initialized[machine_index] = TRUE;
+	}
+}
+
+static void distributed_afk_tick(
+	void)
+{
+	long timeout = config_integer("network.afk_timeout");
+	unsigned long now = system_milliseconds();
+	long machine_indices[HALO_PORT_MAXIMUM_NETWORK_MACHINES];
+	short count;
+	short index;
+
+	if (timeout <= 0 || !game_in_progress() || !game_engine_in_play())
+		return;
+	if (timeout < 45)
+		timeout = 45;
+
+	count = distributed_client_machines(machine_indices, HALO_PORT_MAXIMUM_NETWORK_MACHINES);
+	for (index = 0; index < count; index++)
+	{
+		long m = machine_indices[index];
+		unsigned long elapsed_s;
+
+		if (m < 0 || m >= HALO_PORT_MAXIMUM_NETWORK_MACHINES)
+			continue;
+		if (!distributed_afk.initialized[m])
+		{
+			distributed_afk.last_active_ms[m] = now;
+			distributed_afk.warned[m] = FALSE;
+			distributed_afk.initialized[m] = TRUE;
+			continue;
+		}
+
+		elapsed_s = (now - distributed_afk.last_active_ms[m]) / 1000;
+		if (elapsed_s >= (unsigned long)(timeout - 30) && !distributed_afk.warned[m])
+		{
+			distributed_send_notice_to_machine(m,
+				"AFK Warning: You will be kicked in 30 seconds for inactivity");
+			distributed_afk.warned[m] = TRUE;
+		}
+		else if (elapsed_s >= (unsigned long)timeout)
+		{
+			char names[64];
+			char notice[128];
+
+			distributed_machine_player_names(m, names, sizeof(names));
+			snprintf(notice, sizeof(notice), "%s was kicked for inactivity (AFK)", names[0] ? names : "A player");
+			distributed_send_notice(notice);
+			network_game_server_kick_machine(m, FALSE);
+			distributed_afk.initialized[m] = FALSE;
+		}
+	}
+}
+
 /* (the host) a client's players' input, and from it (once a message) how
 long a message takes that client and back */
 static void distributed_handle_inputs(
@@ -2857,6 +2952,7 @@ static void distributed_handle_inputs(
 		action.throttle.i = PIN(action.throttle.i, -1.0f, 1.0f);
 		action.throttle.j = PIN(action.throttle.j, -1.0f, 1.0f);
 		action.primary_trigger = PIN(action.primary_trigger, 0.0f, 1.0f);
+		distributed_afk_note_activity(machine_index, &action);
 		/* (a spectator's buttons pick whom it watches: not counted) */
 		if (network_coop_active() && player->unit_index != NONE)
 			distributed_note_input_actions(input->player_index, &action);
@@ -3834,8 +3930,8 @@ void network_distributed_new_game(
 	network_aim_assist_reset();
 	network_shield_effects_reset();
 	network_votekick_new_game();
-	network_afk_new_game();
 	network_map_vote_reset();
+	csmemset(&distributed_afk, 0, sizeof(distributed_afk));
 }
 
 /* after each tick (game_time.c) */
@@ -3895,7 +3991,8 @@ void network_distributed_tick(
 		if (game_time_get() % GAME_STATE_INTERVAL_TICKS == 0)
 			profile_scope(distributed_tick_send_game_state_section, distributed_send_game_state(NONE);)
 		network_votekick_host_tick();
-		network_afk_host_tick();
+		if (game_time_get() % TICKS_PER_SECOND == 0)
+			distributed_afk_tick();
 	}
 	else if (connection == _game_connection_network_client)
 	{
@@ -4496,7 +4593,7 @@ boolean network_distributed_banned(
 			banned = TRUE;
 		}
 		/* (or the whole hardware id) */
-		if (hardware_id_length && hwid && !strncmp(hwid + 5, kept_hardware_id, hardware_id_length) &&
+		if (!banned && hardware_id_length && hwid && !strncmp(hwid + 5, kept_hardware_id, hardware_id_length) &&
 			(hwid[5 + hardware_id_length] == '\t' || hwid[5 + hardware_id_length] == '\n' ||
 				hwid[5 + hardware_id_length] == '\r' || hwid[5 + hardware_id_length] == ' ' ||
 				hwid[5 + hardware_id_length] == 0))
@@ -4534,9 +4631,11 @@ unsigned long network_distributed_ban(
 {
 	char text[32];
 	char kept_names[64];
+	char hardware_id[40] = "";
 	char discord_id[DISCORD_ID_SIZE] = "";
 	char discord_name[DISCORD_NAME_SIZE] = "";
 	char discord[DISCORD_ID_SIZE + DISCORD_NAME_SIZE + 16] = "";
+	char duration_desc[64] = "";
 	char notice[MAXIMUM_NOTICE_LENGTH];
 	unsigned long until = distributed_next_ban_until;
 
@@ -4554,7 +4653,7 @@ unsigned long network_distributed_ban(
 		FALSE);
 	if (discord_id[0] || discord_name[0])
 		snprintf(discord, sizeof(discord), " (Discord: %s, %s)", discord_name, discord_id);
-	snprintf(notice, sizeof(notice), "%s%s banned by the host", kept_names, discord);
+	snprintf(notice, sizeof(notice), "%s%s banned by the host%s", kept_names, discord, duration_desc);
 	/* (to every client in the game: in the lobby, the host's own) */
 	if (game_in_progress())
 		distributed_send_notice(notice);

@@ -518,8 +518,12 @@ def generate_linux_build(n: Writer, sln: Any) -> None:
 
     # the high-res HUD's textures (port/assets/hud; port/linux/src/hud_hires.c)
     embedded_assets = hud_assets_build(n, "linux", build_dir / "generated" / "hud_hires_assets.c")
-    # a dedicated server's admin page (port/assets/server_ui; port/linux/src/server_http.c)
-    embedded_assets += server_ui_build(n, "linux", build_dir / "generated" / "server_ui_assets.c")
+    # a dedicated server's admin page (port/assets/server_ui; port/linux/src/server_http.c):
+    # this fork carries its dashboard as one self-contained page in
+    # port/linux/game/server_ui_embedded.c, which defines the same table;
+    # the generated one is left out then (they would collide at link)
+    if not (Path("port/linux/game/server_ui_embedded.c")).is_file():
+        embedded_assets += server_ui_build(n, "linux", build_dir / "generated" / "server_ui_assets.c")
 
     # the portable build's system root and SDL3, or the build machine's
     if getattr(sln, "port_portable", False):
@@ -618,7 +622,7 @@ def generate_linux_build(n: Writer, sln: Any) -> None:
                 add_object(source, f"{posix_cflags} -I{MINIUPNPC_DIR / 'include'} -DMINIUPNP_STATICLIB", posix=True)
             elif source.name.startswith("posix_"):
                 add_object(source, posix_cflags, posix=True)
-            elif source.name in ("updater.c", "server_mode.c"):
+            elif source.name in ("updater.c", "server_mode.c", "server_master.c", "master_list.c", "server_json.c", "server_events.c", "server_log.c"):
                 add_object(source, f"{platform_cflags} {updater_defines(getattr(sln, 'port_release', False))}")
             else:
                 add_object(source, platform_cflags)

@@ -41,12 +41,64 @@ boolean network_game_server_graceful_shutdown(
 	struct network_game_server *server);
 boolean network_game_server_reset_to_pregame(
 	struct network_game_server *server);
+word network_game_server_get_state(
+	struct network_game_server *server,
+	short *substate);
+struct network_game *network_game_server_get_game(
+	struct network_game_server *server);
 void network_game_server_pause_countdown(
 	struct network_game_server *server,
 	boolean pause_countdown);
+/* port: the players a game a host runs asks for (network_test.c): a host
+given a map list asks for one, so it starts with nobody on it */
+void network_game_server_port_set_minimum_players(
+	struct network_game_server *server,
+	long minimum_players);
 /* port: drop the joins a finished game left waiting, so the next one
 starts with none (network_test.c's host) */
 void network_game_server_port_clear_queued_players(
+	struct network_game_server *server);
+/* port: the players a host's game holds (a variant with teams asks for
+one on each: server_needs_more_teams) */
+long network_game_server_port_player_count(
+	struct network_game_server *server);
+/* port: the machines a host's game asks for (a host the map list is
+given plays on its own: one) */
+void network_game_server_port_set_minimum_machines(
+	struct network_game_server *server,
+	long minimum_machines);
+/* port: why a game a host asks for is not starting: the server's state,
+its countdown and the conditions it waits for (network_test.c) */
+void network_game_server_port_log_state(
+	struct network_game_server *server);
+/* port: whether the game is counting down to its start. The lobby shows it
+to every machine (network_game_server_countdown_started), so a host that lets
+it run shows the players the time they have (network_test.c), rather than
+starting the game itself. */
+boolean network_game_server_port_countdown_active(
+	struct network_game_server *server);
+/* port: start the lobby's countdown, as a machine joining the lobby does
+(network_game_server_update_countdown). A host with nobody but itself at the
+menus has no client of its own to ask for one, and the countdown is what every
+machine's lobby shows until the game begins (network_test.c). seconds: how
+long it counts (0: the game's own, NETWORK_GAME_COUNTDOWN_TIME). */
+void network_game_server_port_start_countdown(
+	struct network_game_server *server,
+	long seconds);
+/* port: the minutes a game a host's list plays is given (the game's own
+options come from the server, not from the menus' variant: a built-in
+variant's time limit is none, and a game whose score nobody reaches would
+never end and the list would stand still) */
+void network_game_server_port_set_time_limit(
+	struct network_game_server *server,
+	long minutes);
+/* port: end a host's game (postgame), for a dedicated host whose players have
+all left (network_test.c) */
+void network_game_server_port_end_game(
+	struct network_game_server *server);
+/* port: directly force the server to start loading the network game,
+bypassing client countdown packets that can be dropped or delayed */
+boolean network_game_server_port_force_start(
 	struct network_game_server *server);
 /* port: a dedicated server's lobby (port/linux/game/server_director.c) */
 long network_game_server_port_countdown_milliseconds(

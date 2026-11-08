@@ -108,6 +108,12 @@ and network_event, which the countdown writes its reasons to */
 static long network_game_server_port_minimum_machines = 0;
 static void network_event(char const *format, ...) { (void)format; }
 
+/* port: the file's own settings and log, which the slicer does not take: the
+machines a host's game asks for (a host the map list is given asks for one),
+and network_event, which the countdown writes its reasons to */
+static long network_game_server_port_minimum_machines = 0;
+static void network_event(char const *format, ...) { (void)format; }
+
 #include "under_test.inc"
 
 static void join_machine(
